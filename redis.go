@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"encoding/json"
 	"log"
 	"strings"
 
@@ -10,59 +11,42 @@ import (
 	socketio "github.com/GuilhermeFirmiano/socket-io"
 	"github.com/GuilhermeFirmiano/socket-io-redis/cmap_string_cmap"
 	"github.com/GuilhermeFirmiano/socket-io-redis/cmap_string_socket"
-
-	"encoding/json"
 )
 
 type broadcast struct {
-	host     string
-	port     string
-	password string
-	pub      redis.PubSubConn
-	sub      redis.PubSubConn
-	prefix   string
-	uid      string
-	key      string
-	remote   bool
-	rooms    cmap_string_cmap.ConcurrentMap
+	pub    redis.PubSubConn
+	sub    redis.PubSubConn
+	prefix string
+	uid    string
+	key    string
+	remote bool
+	rooms  cmap_string_cmap.ConcurrentMap
 }
 
-// opts: {
-//   "host": "127.0.0.1",
-//   "port": "6379"
-//   "prefix": "socket.io"
-// }
-func Redis(opts map[string]string) socketio.Broadcast {
+//Option ...
+type Option struct {
+	Host     string
+	Port     string
+	Password string
+}
+
+//Redis ...
+func Redis(opts Option) socketio.BroadcastAdaptor {
 	b := broadcast{
 		rooms: cmap_string_cmap.New(),
 	}
 
 	options := []redis.DialOption{}
 
-	var ok bool
-	b.host, ok = opts["host"]
-	if !ok {
-		b.host = "127.0.0.1"
-	}
-	b.port, ok = opts["port"]
-	if !ok {
-		b.port = "6379"
-	}
-	b.prefix, ok = opts["prefix"]
-	if !ok {
-		b.prefix = "socket.io"
-	}
+	b.prefix = "socket.io"
 
-	b.password, ok = opts["password"]
-	if ok {
-		options = append(options, redis.DialPassword(b.password))
-	}
+	options = append(options, redis.DialPassword(opts.Password))
 
-	pub, err := redis.Dial("tcp", b.host+":"+b.port, options...)
+	pub, err := redis.Dial("tcp", opts.Host+":"+opts.Port, options...)
 	if err != nil {
 		panic(err)
 	}
-	sub, err := redis.Dial("tcp", b.host+":"+b.port, options...)
+	sub, err := redis.Dial("tcp", opts.Host+":"+opts.Port, options...)
 	if err != nil {
 		panic(err)
 	}
@@ -124,61 +108,76 @@ func (b broadcast) onmessage(channel string, data []byte) error {
 
 	args := out["args"]
 	opts := out["opts"]
-
-	room, ok := opts[0].(string)
+	ignore, ok := opts[0].(socketio.Socket)
+	if !ok {
+		log.Println("ignore is not a socket")
+		ignore = nil
+	}
+	room, ok := opts[1].(string)
 	if !ok {
 		log.Println("room is not a string")
 		room = ""
 	}
-	message, ok := opts[1].(string)
+	message, ok := opts[2].(string)
 	if !ok {
 		log.Println("message is not a string")
 		message = ""
 	}
 
 	b.remote = true
-	b.Send(room, message, args...)
+	b.Send(ignore, room, message, args...)
 	return nil
 }
 
-func (b broadcast) Join(room string, socket socketio.Conn) {
+func (b broadcast) Join(room string, socket socketio.Socket) error {
 	sockets, ok := b.rooms.Get(room)
 	if !ok {
 		sockets = cmap_string_socket.New()
 	}
-	sockets.Set(socket.ID(), socket)
+	sockets.Set(socket.Id(), socket)
 	b.rooms.Set(room, sockets)
+
+	return nil
 }
 
-func (b broadcast) Leave(room string, socket socketio.Conn) {
+func (b broadcast) Leave(room string, socket socketio.Socket) error {
 	sockets, ok := b.rooms.Get(room)
 	if !ok {
-		return
+		return nil
 	}
-	sockets.Remove(socket.ID())
+	sockets.Remove(socket.Id())
 	if sockets.IsEmpty() {
 		b.rooms.Remove(room)
+		return nil
 	}
 
 	b.rooms.Set(room, sockets)
+
+	return nil
 }
 
-func (b broadcast) LeaveAll(socket socketio.Conn) {}
-
 // Same as Broadcast
-func (b broadcast) Send(room, message string, args ...interface{}) {
+func (b broadcast) Send(ignore socketio.Socket, room, message string, args ...interface{}) error {
 	sockets, ok := b.rooms.Get(room)
 	if !ok {
-		return
+		return nil
 	}
 	for item := range sockets.Iter() {
+		id := item.Key
 		s := item.Val
-		s.Emit(message, args...)
+		if ignore != nil && ignore.Id() == id {
+			continue
+		}
+		err := (s.Emit(message, args...))
+		if err != nil {
+			log.Println("error broadcasting:", err)
+		}
 	}
 
 	opts := make([]interface{}, 3)
-	opts[0] = room
-	opts[1] = message
+	opts[0] = ignore
+	opts[1] = room
+	opts[2] = message
 	in := map[string][]interface{}{
 		"args": args,
 		"opts": opts,
@@ -191,9 +190,8 @@ func (b broadcast) Send(room, message string, args ...interface{}) {
 		b.pub.Conn.Do("PUBLISH", b.key, buf)
 	}
 	b.remote = false
+	return nil
 }
-
-func (b broadcast) SendAll(event string, args ...interface{}) {}
 
 func (b broadcast) Len(room string) int {
 	return len(b.rooms)
@@ -206,8 +204,7 @@ func (b broadcast) Clear(room string) {
 // Rooms gives the list of all the rooms available for broadcast in case of
 // no connection is given, in case of a connection is given, it gives
 // list of all the rooms the connection is joined to
-func (b broadcast) Rooms(socket socketio.Conn) []string {
-
+func (b broadcast) Rooms(socket socketio.Socket) []string {
 	rooms := make([]string, 0)
 	if socket == nil {
 		for _, room := range b.rooms.GetAll() {
@@ -219,7 +216,4 @@ func (b broadcast) Rooms(socket socketio.Conn) []string {
 		rooms = append(rooms, socket.Rooms()...)
 	}
 	return rooms
-}
-
-func (b broadcast) ForEach(room string, f socketio.EachFunc) {
 }
