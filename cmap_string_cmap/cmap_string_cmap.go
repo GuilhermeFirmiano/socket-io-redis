@@ -5,7 +5,7 @@ import (
 	"hash/fnv"
 	"sync"
 
-	"github.com/GuilhermeFirmiano/go-socket.io-redis/cmap_string_socket"
+	"github.com/GuilhermeFirmiano/socket-io-redis/cmap_string_socket"
 )
 
 var SHARD_COUNT = 32

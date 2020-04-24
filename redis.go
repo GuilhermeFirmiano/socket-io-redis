@@ -4,12 +4,12 @@ import (
 	"log"
 	"strings"
 
-	"github.com/GuilhermeFirmiano/go-socket.io-redis/cmap_string_cmap"
-	"github.com/GuilhermeFirmiano/go-socket.io-redis/cmap_string_socket"
 	"github.com/garyburd/redigo/redis"
 	uuid "github.com/nu7hatch/gouuid"
 
 	socketio "github.com/GuilhermeFirmiano/socket-io"
+	"github.com/GuilhermeFirmiano/socket-io-redis/cmap_string_cmap"
+	"github.com/GuilhermeFirmiano/socket-io-redis/cmap_string_socket"
 
 	"encoding/json"
 )
